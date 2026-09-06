@@ -1,8 +1,8 @@
-(** Minimal SDP support for a WebRTC receiver.
+(** Minimal SDP support for a WebRTC endpoint.
 
-    We only ever deal with the shape of session a browser produces for a
-    microphone and a camera, so the parser is deliberately partial: it looks
-    for the attributes we need and ignores everything else. *)
+    We only ever deal with the shape of session a browser produces, so the
+    parser is deliberately partial: it looks for the attributes we need and
+    ignores everything else. *)
 
 type direction = Sendrecv | Sendonly | Recvonly | Inactive
 
@@ -37,6 +37,8 @@ type media = {
   kind : string;
   line : string;
   codec : codec option;
+  codecs : codec list;
+  ssrcs : int32 list;
   direction : direction;
 }
 
@@ -244,12 +246,63 @@ let choose_video codecs =
           let h264 = List.filter (fun c -> named c "h264") codecs in
           List.find_opt fragmentable h264)
 
-let choose section =
-  let codecs = codecs section in
-  match section.kind with
+let choose kind codecs =
+  match kind with
   | "audio" -> first_named codecs "opus"
   | "video" -> choose_video codecs
   | _ -> None
+
+(* The parameters of an [a=fmtp], as the assignments it is a list of. Only the
+   ones that decide whether two descriptions of a codec are the same stream
+   matter here. *)
+let parameters codec =
+  match codec.fmtp with
+  | None -> []
+  | Some fmtp ->
+      List.filter_map
+        (fun parameter ->
+          match String.index_opt parameter '=' with
+          | None -> None
+          | Some i ->
+              Some
+                ( String.lowercase_ascii (String.trim (String.sub parameter 0 i)),
+                  String.lowercase_ascii
+                    (String.trim
+                       (String.sub parameter (i + 1)
+                          (String.length parameter - i - 1))) ))
+        (String.split_on_char ';' fmtp)
+
+let parameter codec name = List.assoc_opt name (parameters codec)
+
+(* Two descriptions name the same stream when the encoding and the clock agree
+   — case-insensitively, since browsers write "opus" but "VP8" — and, for
+   H.264, when the packetization mode and the profile do too: a decoder handed
+   a profile it did not ask for produces nothing, and a forwarder cannot
+   change the profile of what it forwards. *)
+let same codec other =
+  String.lowercase_ascii codec.name = String.lowercase_ascii other.name
+  && codec.clock_rate = other.clock_rate
+  && codec.channels = other.channels
+  && ((not (named codec "h264"))
+     || (parameter codec "packetization-mode" = parameter other "packetization-mode"
+        && parameter codec "profile-level-id" = parameter other "profile-level-id"))
+
+let matching codec codecs = List.find_opt (same codec) codecs
+
+(* The synchronisation sources a section declares. A browser writes several
+   attributes for each, one per property; we want each source once, in the
+   order they were declared, since that is the order the tracks are in. *)
+let ssrcs section =
+  List.fold_left
+    (fun acc value ->
+      match words value with
+      | id :: _ -> (
+          match Int32.of_string_opt ("0u" ^ id) with
+          | Some ssrc when not (List.mem ssrc acc) -> acc @ [ ssrc ]
+          | _ -> acc)
+      | [] -> acc)
+    []
+    (get_all section "ssrc")
 
 let parse_offer sdp =
   let sections = sections sdp in
@@ -263,11 +316,14 @@ let parse_offer sdp =
   let media =
     List.map
       (fun section ->
+        let codecs = codecs section in
         {
           mid = (match get_value section "mid" with Some m -> m | None -> "0");
           kind = section.kind;
           line = section.line;
-          codec = choose section;
+          codec = choose section.kind codecs;
+          codecs;
+          ssrcs = ssrcs section;
           direction =
             List.find_map
               (fun (name, _) -> direction_of_string name)
@@ -300,15 +356,21 @@ let host_priority rank =
   let local_preference = max 0 (65535 - rank) in
   (126 * 0x1000000) + (local_preference * 256) + 255
 
-(** The answer to [offer]: we are an ICE-lite, DTLS-passive, receive-only
-    endpoint reachable at [port] on each of [addresses], most preferred first,
-    with every section we accepted bundled onto that one transport.
+(** What we send on a section, when we send on one at all. *)
+type sending = { ssrc : int32; cname : string; stream : string; track : string }
 
-    Several are worth offering because the peer pairs its own candidates with
-    ours by address family and route: a browser on the same machine as the
-    server has no loopback candidate of its own to pair with a loopback one of
-    ours, and would find nothing to check against. *)
-let answer ~offer ~addresses ~port ~ice_ufrag ~ice_pwd ~fingerprint () =
+(** The answer to [offer]: we are an ICE-lite, DTLS-passive endpoint reachable
+    at [port] on each of [addresses], most preferred first, with every section
+    we accepted bundled onto that one transport. A section is answered
+    [a=recvonly] unless [sending] gives what we send on it, and [media]
+    overrides the choice of codec the offer was parsed with.
+
+    Several addresses are worth offering because the peer pairs its own
+    candidates with ours by address family and route: a browser on the same
+    machine as the server has no loopback candidate of its own to pair with a
+    loopback one of ours, and would find nothing to check against. *)
+let answer ~offer ?media:overridden ?(sending = fun _ -> None) ~addresses ~port
+    ~ice_ufrag ~ice_pwd ~fingerprint () =
   let ip =
     match addresses with
     | ip :: _ -> ip
@@ -317,7 +379,8 @@ let answer ~offer ~addresses ~port ~ice_ufrag ~ice_pwd ~fingerprint () =
   let buffer = Buffer.create 1024 in
   let line fmt = Printf.ksprintf (fun s -> Buffer.add_string buffer (s ^ "\r\n")) fmt in
   let algorithm, digest = fingerprint in
-  let accepted = List.filter (fun m -> m.codec <> None) offer.media in
+  let media = match overridden with Some media -> media | None -> offer.media in
+  let accepted = List.filter (fun m -> m.codec <> None) media in
   line "v=0";
   line "o=- %Lu 1 IN IP4 127.0.0.1" (Random.int64 Int64.max_int);
   line "s=-";
@@ -361,7 +424,15 @@ let answer ~offer ~addresses ~port ~ice_ufrag ~ice_pwd ~fingerprint () =
           line "a=fingerprint:%s %s" algorithm digest;
           line "a=setup:passive";
           line "a=mid:%s" media.mid;
-          line "a=recvonly";
+          (* A section we send on is answered sendonly, with the stream and
+             track it belongs to: it is by the [a=msid] that a peer knows which
+             of several tracks of ours is which, and by the two sharing a
+             stream that it knows to play them in step. *)
+          (match sending media with
+          | None -> line "a=recvonly"
+          | Some s ->
+              line "a=sendonly";
+              line "a=msid:%s %s" s.stream s.track);
           line "a=rtcp-mux";
           (match media.kind with
           | "audio" ->
@@ -375,11 +446,19 @@ let answer ~offer ~addresses ~port ~ice_ufrag ~ice_pwd ~fingerprint () =
           (* The only feedback we send. Asking for it commits us to nothing:
              what a receiver does not send, a sender simply never gets. *)
           if codec.pli then line "a=rtcp-fb:%d nack pli" pt;
+          (* Signalled so that a peer can bind the packets to the track before
+             they arrive, and so that the reports naming this source are known
+             to be about it. *)
+          (match sending media with
+          | None -> ()
+          | Some s ->
+              line "a=ssrc:%lu cname:%s" s.ssrc s.cname;
+              line "a=ssrc:%lu msid:%s %s" s.ssrc s.stream s.track);
           List.iteri
             (fun rank address ->
               line "a=candidate:%d 1 udp %d %s %d typ host" (rank + 1)
                 (host_priority rank) address port)
             addresses;
           line "a=end-of-candidates")
-    offer.media;
+    media;
   Buffer.contents buffer

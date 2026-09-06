@@ -657,9 +657,10 @@ let handle_rtcp session packet =
   List.iter
     (fun reception ->
       List.iter
-        (fun (ssrc, ntp) ->
-          if Rtp.Reception.source reception = Some ssrc then
-            Rtp.Reception.sender_report reception ~ntp)
+        (fun (report : Rtp.Rtcp.sender_info) ->
+          if Rtp.Reception.source reception = Some report.sender then
+            Rtp.Reception.sender_report reception
+              ~ntp:(Rtp.Rtcp.compact_ntp report.ntp))
         reports)
     (receptions session);
   log.debug (fun log ->

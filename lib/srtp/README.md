@@ -4,13 +4,20 @@ SRTP and SRTCP (RFC 3711) under `AES_CM_128_HMAC_SHA1_80`, the profile
 DTLS-SRTP negotiates with browsers: AES-128 in counter mode for
 confidentiality, an 80-bit HMAC-SHA1 tag for authentication.
 
-**Media travels one way**, so of RTP only the receiving half exists. Of RTCP
-there is also a protect side, `sender` and `protect_rtcp`, for the keyframe
-requests and receiver reports a recorder has to say back. It runs the same
-primitives the other way, counter mode being its own inverse, under the
-server's half of the exported keying material rather than the client's, and
-counts its own index up from zero — that index is what keeps two identical
-packets from sharing a counter block.
+Both halves are here. `create` and `unprotect` receive, under the client's
+half of the exported keying material; `sender`, `protect` and `protect_rtcp`
+send, under the server's half. The sending side runs the very same primitives
+— counter mode is its own inverse — so it is short: what differs is where the
+packet index comes from.
+
+For **SRTCP** the index is ours to choose, and counts up from zero over the
+life of the context; it travels in the packet, and it is what keeps two
+identical keyframe requests from sharing a counter block. For **SRTP** the
+index is the packet's own sequence number extended by a rollover counter that
+travels nowhere at all, so a sender has to count the wraps exactly as the
+receiver will infer them (§3.3.1) — which is why `protect` estimates rather
+than increments, and why a forwarder may hand it a straggler the network
+reordered without the numbering coming apart.
 
 ## Key derivation
 
@@ -62,3 +69,7 @@ failure shows up exactly as it would in the wild, as a tag that does not match.
 The same route catches tampering, a wrong key, a replay and a truncated packet.
 Only the primitives those vectors need are public; the counter and the window
 are reached through `unprotect` alone.
+
+`protect` has no vector of its own, so it is held against the packets that
+test builds by hand out of the primitives that do: the same header, the same
+counter mode, the same tag, over a wrap and over a straggler from before it.

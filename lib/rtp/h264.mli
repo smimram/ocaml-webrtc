@@ -11,6 +11,15 @@ val nal_type : string -> int
     decoded on its own, 7 a sequence parameter set, 8 a picture parameter
     set. *)
 
+val payload_nal_types : string -> int list
+(** The types of the NAL units a payload begins: one for a packet carrying a
+    unit whole, several for an aggregation packet, one for the first fragment
+    of a unit and none for the fragments after it — which cannot be joined and
+    say nothing about what they belong to.
+
+    It is how a forwarder recognises a point at which a receiver may join: the
+    parameter sets that precede a picture, rather than the picture itself. *)
+
 val starts_unit : string -> bool
 (** Whether a payload begins a NAL unit rather than continuing a fragmented
     one: the test for having joined a picture partway through. *)

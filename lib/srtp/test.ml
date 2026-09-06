@@ -122,6 +122,46 @@ let run () =
     (Srtp.unprotect other (protect ~roc:1 ~sequence:300)
     = Error Srtp.Authentication_failed);
 
+  suite "srtp sending";
+  (* Protecting has no published vector of its own, so it is held against the
+     packets built by hand out of the primitives that do: the same header, the
+     same counter mode over the same session keys, the same tag. *)
+  let sending = Srtp.sender ~master_key:key ~master_salt:salt in
+  let unprotected ~sequence =
+    let header = Bytes.create 12 in
+    Bytes.set_uint8 header 0 0x80;
+    Bytes.set_uint8 header 1 111;
+    Bytes.set_uint16_be header 2 sequence;
+    Bytes.set_int32_be header 4 (Int32.of_int (sequence * 960));
+    Bytes.set_int32_be header 8 ssrc;
+    Bytes.to_string header ^ payload
+  in
+  check_string "a packet is protected as the vectors say"
+    ~expected:(protect ~roc:0 ~sequence:1000)
+    (Srtp.protect sending (unprotected ~sequence:1000));
+  (* The rollover counter is the sender's to keep, and has to move the way the
+     receiver will infer that it moved. *)
+  check_string "up to the wrap" ~expected:(protect ~roc:0 ~sequence:65535)
+    (Srtp.protect sending (unprotected ~sequence:65535));
+  check_string "and over it" ~expected:(protect ~roc:1 ~sequence:0)
+    (Srtp.protect sending (unprotected ~sequence:0));
+  (* A forwarder sends what the network gave it, and the network reorders; a
+     straggler must not be numbered by its turn. *)
+  check_string "a straggler keeps the counter its number says"
+    ~expected:(protect ~roc:0 ~sequence:65534)
+    (Srtp.protect sending (unprotected ~sequence:65534));
+  check "and what was protected is read back"
+    (Srtp.unprotect
+       (Srtp.create ~master_key:key ~master_salt:salt)
+       (Srtp.protect
+          (Srtp.sender ~master_key:key ~master_salt:salt)
+          (unprotected ~sequence:7))
+    = Ok (unprotected ~sequence:7));
+  check "a datagram that is not RTP is refused"
+    (match Srtp.protect sending "junk" with
+    | _ -> false
+    | exception Invalid_argument _ -> true);
+
   suite "srtcp";
   (* The sending half has no published vector of its own, so it is checked
      against the receiving half, which does: the two derive the same session

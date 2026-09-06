@@ -20,6 +20,15 @@ exception Invalid of string
 val parse : string -> t
 (** @raise Invalid if the packet is truncated or is not RTP version 2. *)
 
+val encode : t -> string
+(** The packet a description stands for, which a forwarder builds by parsing
+    one and writing it back out under another source or another numbering.
+    {!header_length} is ignored: it describes the packet the value came from.
+
+    @raise Invalid
+      if the description cannot be written: more than fifteen contributing
+      sources, or an extension that is not a whole number of 32-bit words. *)
+
 val header_length : string -> int
 (** How many leading bytes of a packet are header. Separate from {!parse}
     because SRTP must know it before it can decrypt what follows.

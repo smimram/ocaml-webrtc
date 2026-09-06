@@ -20,6 +20,33 @@ let pli ~sender ~media =
   Bytes.set_int32_be packet 8 media;
   Bytes.unsafe_to_string packet
 
+(** The NTP time of a moment, in the fixed-point form RFC 3550 §4 wants: the
+    seconds since 1900 in the high 32 bits and the fraction in the low. *)
+let ntp_of_time seconds =
+  let epoch = 2208988800. (* 1900 to 1970 *) in
+  let seconds = seconds +. epoch in
+  let whole = Int64.of_float seconds in
+  let fraction = Int64.of_float ((seconds -. Int64.to_float whole) *. 4294967296.) in
+  Int64.logor (Int64.shift_left whole 32) fraction
+
+(* What a report echoes back is the middle of the timestamp, not the whole of
+   it: the low half of the seconds and the high half of the fraction, which
+   between them cover the range and the resolution a round trip needs. *)
+let compact_ntp ntp =
+  Int64.to_int32 (Int64.logand (Int64.shift_right_logical ntp 16) 0xffffffffL)
+
+let sender_report ~sender ~ntp ~timestamp ~packets ~octets =
+  let packet = Bytes.create 28 in
+  Bytes.set_uint8 packet 0 (version lsl 6 (* no report blocks of our own *));
+  Bytes.set_uint8 packet 1 sr;
+  Bytes.set_uint16_be packet 2 (header_words (Bytes.length packet));
+  Bytes.set_int32_be packet 4 sender;
+  Bytes.set_int64_be packet 8 ntp;
+  Bytes.set_int32_be packet 16 timestamp;
+  Bytes.set_int32_be packet 20 packets;
+  Bytes.set_int32_be packet 24 octets;
+  Bytes.unsafe_to_string packet
+
 type report = {
   source : int32;
   fraction_lost : int;
@@ -91,16 +118,40 @@ let rec fold_packets f acc packet offset =
       in
       fold_packets f acc packet (offset + length)
 
+type sender_info = {
+  sender : int32;
+  ntp : int64;
+  rtp_timestamp : int32;
+  packets : int32;
+  octets : int32;
+}
+
 let sender_reports packet =
   List.rev
     (fold_packets
        (fun acc ~payload_type ~offset ~length ->
-         if payload_type = sr && length >= 20 then
-           (* The timestamp a receiver echoes back is the middle 32 bits of the
-              64-bit NTP time: the low half of its seconds and the high half of
-              its fraction (RFC 3550 §6.4.1). *)
-           ( String.get_int32_be packet (offset + 4),
-             String.get_int32_be packet (offset + 10) )
+         if payload_type = sr && length >= 28 then
+           {
+             sender = String.get_int32_be packet (offset + 4);
+             ntp = String.get_int64_be packet (offset + 8);
+             rtp_timestamp = String.get_int32_be packet (offset + 16);
+             packets = String.get_int32_be packet (offset + 20);
+             octets = String.get_int32_be packet (offset + 24);
+           }
            :: acc
+         else acc)
+       [] packet 0)
+
+(* Of the feedback a peer sends us only the picture loss indication is acted
+   on. A full intra request (§4.3.1 of RFC 5104) would mean the same thing, but
+   browsers send the first. *)
+let keyframe_requests packet =
+  List.rev
+    (fold_packets
+       (fun acc ~payload_type ~offset ~length ->
+         if
+           payload_type = psfb && length >= 12
+           && Char.code packet.[offset] land 0x1f = pli_format
+         then String.get_int32_be packet (offset + 8) :: acc
          else acc)
        [] packet 0)

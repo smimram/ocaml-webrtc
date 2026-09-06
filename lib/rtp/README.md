@@ -1,13 +1,13 @@
 # rtp
 
-RTP packets (RFC 3550), a jitter buffer, the RTCP a receiver sends back, the payload formats that carry video,
-and the timeline a container measures against. No dependencies; nothing here
-knows about sockets.
+RTP packets (RFC 3550), a jitter buffer, the RTCP an endpoint sends and reads,
+the payload formats that carry video, and the timeline a container measures
+against. No dependencies; nothing here knows about sockets.
 
 ## packet.ml
 
-Reading only, and only the fields a receiver needs: what identifies a stream,
-what orders it, and where the header ends.
+Only the fields an endpoint needs: what identifies a stream, what orders it,
+and where the header ends.
 
 That last one is load-bearing. `header_length` is exposed separately from
 `parse` because **SRTP must know it before it can decrypt what follows** — the
@@ -19,9 +19,14 @@ keystream and produces noise rather than an error.
 `a=rtcp-mux` is negotiated: RTCP's packet types all fall in 64..95 once the
 marker bit is masked off (RFC 5761 §4).
 
+`encode` writes a description back out, for a forwarder that parses a packet,
+puts its own source and numbering on it and sends it on. The `header_length`
+that came out of `parse` is ignored there: it describes the packet the value
+came from, and a value that has been altered since describes one of its own.
+
 ## rtcp.ml
 
-What a recorder has to say back, built rather than parsed. The picture loss
+What an endpoint has to say back, built rather than parsed. The picture loss
 indication of RFC 4585 §6.3.1, twelve bytes naming our own source and the one
 whose pictures have become unreadable, because a browser sends a fresh keyframe
 only when asked and until one arrives every picture is predicted from a broken
@@ -29,15 +34,23 @@ one. And the receiver report of RFC 3550 §6.4.2 with the CNAME chunk that must
 accompany it, because a sender that hears nothing about what arrived has
 nothing to size its bitrate against.
 
-Of what a browser sends us, `sender_reports` reads one field: the middle
-32 bits of each sender report's NTP timestamp. A report of ours echoes that
-back along with how long we sat on it, and the sender subtracts both from its
-own clock to get the round trip. The walk over a compound packet steps over
-anything it does not recognise rather than stopping, since a browser's compound
-packets carry a good deal we have no use for.
+A sender has one thing to say instead: `sender_report`, which pairs its
+stream's clock with the wall clock. That pairing is the whole content of it,
+and it is the only thing a peer receiving two of our streams can align them
+by — without it a forwarded camera and the microphone that goes with it play
+on clocks that never meet.
+
+Of what a browser sends us, `sender_reports` reads the same pairing back, plus
+the timestamp a receiver report has to echo (`compact_ntp` is its middle 32
+bits, which is the form that travels), and `keyframe_requests` reads the
+picture loss indications, which a forwarder passes upstream to the peer that
+can actually answer them. The walk over a compound packet steps over anything
+it does not recognise rather than stopping, since a browser's compound packets
+carry a good deal we have no use for.
 
 There is still no negative acknowledgement. A recorder cannot use a packet
-twice — by the time it noticed the loss, the picture was already written off.
+twice — by the time it noticed the loss, the picture was already written off —
+and a forwarder keeps no copy to send again.
 
 ## reception.ml
 
@@ -137,16 +150,24 @@ packet does not shorten the picture, it corrupts it — and every picture
 predicted from it after that. So a gap in the sequence numbering, or joining a
 picture partway through, discards the whole frame and counts it.
 
+`starts_keyframe` is the same rule from the other side: where a receiver
+joining now may begin. For VP8 and VP9 it is the first packet of a keyframe;
+for H.264 it is the parameter sets a browser sends immediately before an IDR,
+not the IDR itself, which without them a decoder cannot configure itself for.
+
 ## Testing
 
 `test_vp8.ml`, `test_vp9.ml` and `test_h264.ml` cover the
 descriptors — including the ones a browser actually sends, and the scalability
-structure — the fragmenting, and the picture size read back out of a keyframe
+structure — the fragmenting, the picture size read back out of a keyframe
 and out of two real parameter sets — one baseline and one high profile, both cropped, both
-carrying emulation-prevention bytes.
+carrying emulation-prevention bytes — and, for each format, which packet a
+receiver may join at.
 
 `test.ml`: a packet with two CSRCs and a header extension, so the
-payload offset depends on both; then the buffer, through reordering, a
+payload offset depends on both, written back out and read again with the
+fields a forwarder rewrites rewritten; then the buffer, through reordering, a
 duplicate, a late arrival, a gap that fills, a gap that never does, and a gap
 outlasting the deadline on a stream too sparse to reach the depth; then the
-bytes of a picture loss indication.
+bytes of a picture loss indication, a receiver report and a sender report,
+each held against a packet spelled out by hand.

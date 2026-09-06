@@ -30,6 +30,30 @@ let run () =
   (* A receiver report: payload type 201 with the marker bit set reads as 73. *)
   check "a receiver report is RTCP" (Rtp.Packet.is_rtcp (hex "81C90007"));
 
+  (* What a forwarder does: parse, alter the numbering and the source, write
+     back out. Everything it did not touch has to survive the trip. *)
+  check_string "a packet written back out is the packet"
+    ~expected:packet (Rtp.Packet.encode p);
+  let moved =
+    Rtp.Packet.parse
+      (Rtp.Packet.encode
+         { p with sequence = 0x4321; ssrc = 1l; payload_type = 96 })
+  in
+  check "the fields a forwarder rewrites are rewritten"
+    (moved.sequence = 0x4321 && moved.ssrc = 1l && moved.payload_type = 96);
+  check "and the rest is untouched"
+    (moved.marker && moved.timestamp = 0xC000l && moved.csrc = [ 1l; 2l ]
+    && moved.extension = p.extension
+    && moved.payload = p.payload);
+  (* Dropping the extension shortens the header, which the flag has to say. *)
+  let bare = Rtp.Packet.parse (Rtp.Packet.encode { p with extension = None; csrc = [] }) in
+  check "a header stripped of what a peer did not negotiate is shorter"
+    (bare.header_length = 12 && bare.extension = None && bare.csrc = []);
+  check "an extension that is not a whole number of words is refused"
+    (match Rtp.Packet.encode { p with extension = Some (0xBEDE, "abc") } with
+    | _ -> false
+    | exception Rtp.Packet.Invalid _ -> true);
+
   suite "reorder";
   let buffer = Rtp.Reorder.create ~depth:3 () in
   let push sequence = Rtp.Reorder.push buffer sequence sequence in
@@ -110,17 +134,57 @@ let run () =
      ^ "00000000" (* RTP timestamp *) ^ "00000000" (* packet count *)
      ^ "00000000" (* octet count *))
   in
+  let expected =
+    [
+      {
+        Rtp.Rtcp.sender = 0x11223344l;
+        ntp = 0x0102030405060708L;
+        rtp_timestamp = 0l;
+        packets = 0l;
+        octets = 0l;
+      };
+    ]
+  in
   check "a sender report is read"
-    (Rtp.Rtcp.sender_reports sender_report = [ (0x11223344l, 0x03040506l) ]);
+    (Rtp.Rtcp.sender_reports sender_report = expected);
+  check "the timestamp echoed back is its middle"
+    (Rtp.Rtcp.compact_ntp 0x0102030405060708L = 0x03040506l);
   check "and found after one that is stepped over"
     (Rtp.Rtcp.sender_reports
        (Rtp.Rtcp.compound
           [
             Rtp.Rtcp.source_description ~sender:1l ~cname:"x"; sender_report;
           ])
-    = [ (0x11223344l, 0x03040506l) ]);
+    = expected);
   check "a truncated packet stops the walk"
     (Rtp.Rtcp.sender_reports (String.sub sender_report 0 20) = []);
+
+  (* What we write is what we read: the same report, built rather than
+     spelled out. *)
+  check "a sender report we build reads back"
+    (Rtp.Rtcp.sender_reports
+       (Rtp.Rtcp.sender_report ~sender:0x11223344l ~ntp:0x0102030405060708L
+          ~timestamp:0l ~packets:0l ~octets:0l)
+    = expected);
+  check_string "and is the packet the vector spells out" ~expected:sender_report
+    (Rtp.Rtcp.sender_report ~sender:0x11223344l ~ntp:0x0102030405060708L
+       ~timestamp:0l ~packets:0l ~octets:0l);
+
+  (* An NTP timestamp of the Unix epoch is the seventy years between the two
+     epochs, exactly, with nothing below the point. *)
+  check "the NTP epoch is seventy years before the Unix one"
+    (Rtp.Rtcp.ntp_of_time 0. = Int64.shift_left 2208988800L 32);
+
+  check "a keyframe request names its source"
+    (Rtp.Rtcp.keyframe_requests
+       (Rtp.Rtcp.compound
+          [
+            Rtp.Rtcp.source_description ~sender:1l ~cname:"x";
+            Rtp.Rtcp.pli ~sender:0xDEADBEEFl ~media:0xCAFEBABEl;
+          ])
+    = [ 0xCAFEBABEl ]);
+  check "and a compound packet with none in it asks for nothing"
+    (Rtp.Rtcp.keyframe_requests sender_report = []);
 
   suite "reception";
   let packet ?(ssrc = 0xCAFEBABEl) ~sequence ~timestamp () =

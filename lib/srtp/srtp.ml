@@ -2,9 +2,9 @@
     [AES_CM_128_HMAC_SHA1_80]: AES-128 in counter mode for confidentiality and
     an 80-bit HMAC-SHA1 tag for authentication.
 
-    Only the receiving half is implemented, since the server never sends media.
-    Each synchronisation source is tracked separately, as each has its own
-    rollover counter and replay window. *)
+    Media is received and, by a forwarder, sent on again, so both halves are
+    here. Each synchronisation source is tracked separately, as each has its
+    own rollover counter and replay window. *)
 
 module Aes = Mirage_crypto.AES.CTR
 
@@ -254,7 +254,15 @@ let unprotect_rtcp t packet =
 
 (* Protecting -------------------------------------------------------------- *)
 
-type sender = { keys : keys; mutable rtcp_index : int }
+type sender = {
+  rtp_keys : keys;
+  keys : keys;  (** RTCP's, named as it was when they were the only ones *)
+  mutable rtcp_index : int;
+  (* The rollover counter of each source we send under. It is not carried by a
+     packet, so both ends count the wraps for themselves; ours has to agree
+     with what the receiver will infer from the sequence numbers. *)
+  sent : (int32, stream) Hashtbl.t;
+}
 
 let sender ~master_key ~master_salt =
   if String.length master_key <> key_length then
@@ -262,11 +270,55 @@ let sender ~master_key ~master_salt =
   if String.length master_salt <> salt_length then
     invalid_arg "Srtp.sender: the master salt must be 14 bytes";
   {
+    rtp_keys =
+      derive_keys ~master_key ~master_salt ~encryption:Label.rtp_encryption
+        ~authentication:Label.rtp_authentication ~salt:Label.rtp_salt;
     keys =
       derive_keys ~master_key ~master_salt ~encryption:Label.rtcp_encryption
         ~authentication:Label.rtcp_authentication ~salt:Label.rtcp_salt;
     rtcp_index = 0;
+    sent = Hashtbl.create 4;
   }
+
+(** Protect an RTP packet. The rollover counter is estimated exactly as the
+    receiver will estimate it, from the sequence numbers gone before, so that
+    a packet sent out of order — which a forwarder does whenever the network
+    reordered what it was given — is numbered the way its own sequence number
+    says rather than the way its turn says. *)
+let protect t packet =
+  match Rtp.Packet.header_length packet with
+  | exception Rtp.Packet.Invalid message ->
+      invalid_arg ("Srtp.protect: " ^ message)
+  | header_length ->
+      let sequence = String.get_uint16_be packet 2 in
+      let ssrc = String.get_int32_be packet 8 in
+      let stream =
+        match Hashtbl.find_opt t.sent ssrc with
+        | Some stream -> stream
+        | None ->
+            let stream = { roc = 0; highest = 0; window = 0L; seen = false } in
+            Hashtbl.replace t.sent ssrc stream;
+            stream
+      in
+      let roc = estimate_roc stream sequence in
+      let index_ = index roc sequence in
+      if (not stream.seen) || index_ > index stream.roc stream.highest then begin
+        stream.roc <- roc;
+        stream.highest <- sequence;
+        stream.seen <- true
+      end;
+      let header = String.sub packet 0 header_length in
+      let payload =
+        String.sub packet header_length (String.length packet - header_length)
+      in
+      let body =
+        header ^ cipher t.rtp_keys ~ssrc ~index:index_ ~data:payload
+      in
+      let roll = Bytes.create 4 in
+      Bytes.set_int32_be roll 0 (Int32.of_int roc);
+      body
+      ^ authenticate ~key:t.rtp_keys.authentication
+          (body ^ Bytes.unsafe_to_string roll)
 
 (* The index is ours to choose and must never repeat under one key, since it is
    what makes each counter block unique. Thirty-one bits at a handful of

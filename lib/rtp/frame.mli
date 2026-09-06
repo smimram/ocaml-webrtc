@@ -20,6 +20,16 @@ type frame = {
 
 type t
 
+val starts_keyframe : codec -> string -> bool
+(** Whether a payload is a point at which a receiver joining now can begin: the
+    first packet of a picture that depends on nothing before it. What a
+    forwarder holds a newcomer back until, and what a recorder's first frame
+    is.
+
+    For H.264 the point is the sequence parameter set a browser sends
+    immediately before such a picture, not the picture itself, which without
+    the parameter sets a decoder cannot configure itself for. *)
+
 val create : codec -> t
 
 val push : t -> Packet.t -> frame list
