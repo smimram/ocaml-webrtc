@@ -12,11 +12,17 @@ package. They install as one opam package, `webrtc`, whose libraries are
 `webrtc.sdp`, `webrtc.ice` and so on; inside the repository they are still
 referred to by their bare names (`sdp`, `ice`, …).
 
-`examples/recrtc` is the example they were written for, and the only consumer
-of them here: a web server that records what a browser sends over WebRTC —
-Opus audio, and VP8, VP9 or H.264 video — as an Ogg/Opus or Matroska file. It
-is a package of its own, `recrtc`. `README.md` describes the libraries and
-`examples/recrtc/README.md` the server; this file is about working on them.
+There are two examples, each a package of its own. `examples/recrtc`, the one
+they were written for, is a web server that records what a browser sends over
+WebRTC — Opus audio, and VP8, VP9 or H.264 video — as an Ogg/Opus or Matroska
+file. `examples/conference` is a conferencing server: one speaker sends
+microphone, camera and desktop, everyone else watches, and the server forwards
+the packets without decoding them (a selective forwarding unit). It is what
+exercises the *sending* half of the stack — `Srtp.protect`, `Rtp.Packet.encode`
+and the sender reports — which a recorder never touches.
+
+`README.md` describes the libraries and each example's own `README.md` the
+server; this file is about working on them.
 
 `experiments/recws/` is a separate, self-contained predecessor that uploaded
 `MediaRecorder` chunks over HTTP. It is kept for reference and is not part of
@@ -28,15 +34,17 @@ the build path described here.
 make                     # dune build
 make test                # dune test  (add --force: dune caches a passing run)
 make serve               # dune exec examples/recrtc/src/recrtc.exe
+make conference          # dune exec examples/conference/src/conference.exe
 make serve IP=<address>  # override the advertised candidates
 make serve ARGS=--debug  # extra flags
 ```
 
-`--debug` logs every dropped datagram, and the offer and answer in full, which
-is usually the fastest way to see why a browser is not sending something.
-The page is served from `examples/recrtc/static`, as a path relative to where
-the server is started from — the root of the repository, which is what `make
-serve` does; `--static` is for anywhere else. `--ip` is only needed when the
+Both take the same options. `--debug` logs every dropped datagram, and the
+offer and answer in full, which is usually the fastest way to see why a browser
+is not sending something. The pages are served from the example's own `static`
+directory, as a path relative to where the server is started from — the root of
+the repository, which is what the `make` targets do; `--static` is for anywhere
+else. `--ip` is only needed when the
 address to advertise is not one the machine can see for itself; see "The
 advertised address" below.
 
@@ -90,26 +98,47 @@ ffmpeg -i recording-*.webm -f null -           # decodes clean, exit 0
 ffmpeg -ss 5 -i recording-*.webm -frames:v 1 frame.png
 ```
 
+The conference needs two browsers, one on `/<name>/speaker?autostart` and one
+on `/<name>?autostart`, and is checked from the attendee's `getStats()`:
+`inbound-rtp` with `framesDecoded` climbing and `packetsLost` at zero is the
+whole claim. `&autoshare` on the speaker, with
+`--auto-accept-this-tab-capture` on its browser, exercises the desktop track —
+headless has no desktop to pick from but can hand over its own tab.
+Chromedriver is the least painful way to drive two of them and read the
+statistics out; a plain `--headless` invocation cannot.
+
+A conference is held by its speaker for five seconds after that speaker stops
+sending consent checks, so two test runs in quick succession over the same
+conference name will see the second speaker refused. Use a fresh name, or
+wait.
+
 ## Architecture
 
 Signalling is one HTTP exchange; all media arrives on a **single UDP socket
 shared by every session**, where STUN, DTLS and SRTP are demultiplexed by the
-first byte of the datagram (RFC 7983). `examples/recrtc/src/recrtc.ml` holds
-that loop and the session table; the libraries under `lib/` are transport pieces that know
-nothing about sockets or Dream.
+first byte of the datagram (RFC 7983). Each example's own `.ml` holds that loop
+and the session table; the libraries under `lib/` are transport pieces that know
+nothing about sockets or Dream. The two servers share that shape almost line
+for line, deliberately: what differs is what they do with a packet once it is
+decrypted.
 
 A session is found two ways, and both must stay in step: by the local ICE
 fragment inside a STUN check's USERNAME, and by source address
 (`sessions_by_peer`) for DTLS and media, which identify themselves no other
 way. `track_peer` updates the second when the agent latches or re-latches.
 
-Both tracks share that one transport under BUNDLE and are told apart **by
-payload type**, which `lib/sdp` fixes at one per kind when it answers.
+In `recrtc`, both tracks share that one transport under BUNDLE and are told
+apart **by payload type**, which `lib/sdp` fixes at one per kind when it
+answers. That does not scale to the conference, whose speaker sends two video
+tracks with the same codec and so the same payload type: there they are told
+apart **by synchronisation source**, taken from the `a=ssrc` lines of the
+offer, with the payload type narrowing an unknown source to a kind.
 
 Layering: `sdp` and `ice` are independent; `dtls` produces the SRTP keying
 material that `srtp` consumes; `srtp` depends on `rtp` for the header length,
-which is also where encryption starts, and on the sending side protects the
-keyframe requests and receiver reports `rtp` builds; `rtp` also holds the VP8, VP9 and H.264
+which is also where encryption starts, and on the sending side protects both
+the packets a forwarder passes on and the reports and requests `rtp` builds;
+`rtp` also holds the VP8, VP9 and H.264
 payload formats and the timeline both containers measure against; `oggopus`
 takes the Opus packets out the far end, and `matroska` takes both, borrowing
 the Opus header from `oggopus`. `lib/ice/stun.ml` deliberately has no `Unix`
@@ -124,11 +153,15 @@ list * event` — which is what lets `test/dtls_harness.exe` and
 
 Deliberate scope limits, all load-bearing: ICE-lite (we never send checks),
 `a=setup:passive` (so only the DTLS *server* side exists), one cipher suite,
-one SRTP profile, no application data over DTLS, one audio and one video
-stream per session. The RTCP we send is a picture loss indication, and a
-receiver report with its CNAME once a second; of what a browser sends us only
-the sender report's NTP timestamp is read, which is what a report echoes back
-so that the browser can measure a round trip.
+one SRTP profile, no application data over DTLS. The RTCP we send a peer we
+receive from is a picture loss indication and a receiver report with its CNAME
+once a second; the RTCP we send a peer we send to is a sender report with its
+CNAME. Of what a browser sends us, only the sender report's clock pairing and
+its picture loss indications are read.
+
+`examples/conference` adds its own: one speaker per conference, first one
+wins; attendees watch and never speak; one codec per conference, since nothing
+here transcodes; no congestion control, no simulcast, no retransmission.
 
 ## Things that will bite you
 
@@ -196,13 +229,34 @@ statistics are where to look if this seems not to work: `pliCount` says whether
 our packets are arriving and being understood, and `keyFramesEncoded` whether
 they are being acted on.
 
+**A forwarder must not spend a keyframe on a peer that cannot be sent to
+yet.** Video to an attendee is held shut until a packet arrives that a receiver
+can join at, and opened on the first one — so if `forward` runs before that
+attendee's DTLS handshake has finished, the packet is dropped for want of a
+sender and the gate is left open on a picture nobody got. The guard is at the
+top of the per-attendee loop, not inside `forward_packet`, for exactly that
+reason. It shows up as an attendee that stays black until the next keyframe
+comes round on its own, which with no further loss is never.
+
+**Lip sync is signalled, not computed.** A browser plays two of our streams in
+step only if it can tie both to one clock, which takes two things: the
+microphone and the camera answered with the same `a=msid` stream, and a sender
+report on each carrying the *speaker's* own pairing of RTP timestamp with NTP
+time — advanced by how long ago it reached us, and moved by the offset that
+attendee's stream was rebased on. Dating the report from our own clock instead
+would put the two streams on clocks that agree with nothing. `getStats()` on
+the attendee tells you it worked: `estimatedPlayoutTimestamp` appears on an
+`inbound-rtp` only once a `remote-outbound-rtp` has arrived for it.
+
 **A jitter buffer only thinks when pushed to.** `Rtp.Reorder` bounds a gap two
 ways, by depth and by a deadline, because a stream of a few packets a second
 never reaches the depth and a stream of hundreds reaches it having buffered far
 more than it needs. But both are tested inside `push`, so a track that falls
 silent mid-gap holds what it has for as long as the silence lasts. `expire` is
 what covers that, and `examples/recrtc/src/recrtc.ml` calls it for both tracks
-on every datagram of the session — video's gaps are therefore also aired by audio's
+on every datagram of the session (the conference has no jitter buffer at all:
+a forwarder preserves the ordering it was given, offset, and leaves the
+reordering to the attendee, which has to do it anyway) — video's gaps are therefore also aired by audio's
 packets.
 
 **Matroska lengths of all ones are reserved.** A variable-width integer whose

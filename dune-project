@@ -43,3 +43,22 @@
   lwt
   lwt_ppx
   (mirage-crypto-rng (>= 1.0.0))))
+
+(package
+ (name conference)
+ ; Nothing is installed: this package exists to record the example's own
+ ; dependencies.
+ (allow_empty)
+ (synopsis "A WebRTC conferencing server: one speaker, many attendees")
+ (description
+  "A selective forwarding unit and the pages that drive it: a speaker sends\
+\nmicrophone, camera and desktop once, and the server forwards the packets to\
+\neveryone watching, as an example of what the webrtc libraries can be used\
+\nfor.")
+ (depends
+  (ocaml (>= 4.14))
+  webrtc
+  dream
+  lwt
+  lwt_ppx
+  (mirage-crypto-rng (>= 1.0.0))))
