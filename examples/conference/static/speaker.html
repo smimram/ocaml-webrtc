@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>conference — speaker</title>
+    <link rel="stylesheet" href="/static/conference.css" />
+  </head>
+  <body>
+    <h1>speaking in <span class="name" id="conference"></span></h1>
+    <p class="about">
+      The microphone and camera go out as soon as you connect; the desktop
+      when you share it. Attendees are watching at
+      <code id="address"></code>.
+    </p>
+    <div class="controls">
+      <button class="primary" id="connect">Connect</button>
+      <button id="share" disabled>Share desktop</button>
+      <span id="status">idle</span>
+    </div>
+    <div class="videos">
+      <figure class="idle" id="camera-figure">
+        <video id="camera" autoplay muted playsinline></video>
+        <figcaption>camera</figcaption>
+      </figure>
+      <figure class="idle" id="screen-figure">
+        <video id="screen" autoplay muted playsinline></video>
+        <figcaption>desktop</figcaption>
+      </figure>
+    </div>
+    <footer><span id="watchers">nobody is watching yet</span></footer>
+    <script src="/static/speaker.js"></script>
+  </body>
+</html>

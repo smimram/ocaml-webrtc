@@ -20,7 +20,7 @@ separately:
 | `webrtc.sdp` | parsing an offer, generating the answer |
 | `webrtc.ice` | STUN codec (RFC 5389) and an ICE-lite agent (RFC 8445) |
 | `webrtc.dtls` | a DTLS 1.2 server (RFC 6347) exporting SRTP keys (RFC 5764) |
-| `webrtc.srtp` | unprotecting SRTP and SRTCP (RFC 3711), and protecting the SRTCP we send |
+| `webrtc.srtp` | protecting and unprotecting SRTP and SRTCP (RFC 3711) |
 | `webrtc.rtp` | RTP packets, a jitter buffer, RTCP, VP8, VP9 and H.264 payload formats |
 | `webrtc.oggopus` | writing Ogg pages and an Opus stream (RFC 7845) |
 | `webrtc.matroska` | writing EBML and a Matroska file (RFC 9559) |
@@ -35,7 +35,7 @@ deliberately does not, and how it is checked. The interfaces are documented in
 the `.mli` files, from which the [online
 documentation](https://smimram.github.io/ocaml-webrtc/) is built.
 
-## The example
+## The examples
 
 [`examples/recrtc`](examples/recrtc) is a web server that records what a
 browser sends it over WebRTC — the microphone, and the camera if you want it —
@@ -44,6 +44,17 @@ uses all of the libraries above and is the reason they exist.
 
 ```
 make serve                       # then open http://localhost:8080
+```
+
+[`examples/conference`](examples/conference) is the other direction: a
+conferencing server, where one speaker sends microphone, camera and desktop
+and everyone else watches. It is a selective forwarding unit — each packet is
+decrypted, renumbered and encrypted again for every attendee, and no codec is
+run — so it is what exercises the sending half of `webrtc.srtp` and the
+sender's half of `webrtc.rtp`.
+
+```
+make conference                  # then open http://localhost:8080
 ```
 
 ## Testing
@@ -69,4 +80,6 @@ harness prints.
 The libraries were written to serve one endpoint, and they carry its
 assumptions: ICE-lite (checks are answered, never sent), the DTLS *server* side
 only, one cipher suite, one SRTP profile (`AES_CM_128_HMAC_SHA1_80`), no
-application data over DTLS. Each README says where its own line is drawn.
+application data over DTLS. Nothing here encodes or decodes media: what a
+browser sent is what is stored, and what is forwarded. Each README says where
+its own line is drawn.

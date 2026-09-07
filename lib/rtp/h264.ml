@@ -13,6 +13,33 @@ let starts_unit payload =
     String.length payload >= 2 && Char.code payload.[1] land 0x80 <> 0
   else (indicator >= 1 && indicator <= 23) || indicator = stap_a
 
+(* An aggregation packet is the indicator byte then a sequence of units, each
+   preceded by its sixteen-bit length (RFC 6184 §5.7.1). *)
+let rec aggregated payload offset acc =
+  let length = String.length payload in
+  if offset >= length then List.rev acc
+  else if offset + 2 > length then List.rev acc
+  else
+    let size = String.get_uint16_be payload offset in
+    if size = 0 || offset + 2 + size > length then List.rev acc
+    else
+      aggregated payload (offset + 2 + size)
+        (String.sub payload (offset + 2) size :: acc)
+
+let payload_nal_types payload =
+  if String.length payload < 1 then []
+  else
+    match Char.code payload.[0] land 0x1f with
+    | n when n >= 1 && n <= 23 -> [ n ]
+    | n when n = stap_a -> List.map nal_type (aggregated payload 1 [])
+    | n when n = fu_a ->
+        (* Only the first fragment of a unit says what the unit is, and only it
+           can be joined; the rest continue something already begun. *)
+        if String.length payload >= 2 && Char.code payload.[1] land 0x80 <> 0 then
+          [ Char.code payload.[1] land 0x1f ]
+        else []
+    | _ -> []
+
 (* Reassembly -------------------------------------------------------------- *)
 
 type t = {
@@ -27,19 +54,6 @@ let create () = { fragment = Buffer.create 4096; started = false }
 let reset t =
   Buffer.clear t.fragment;
   t.started <- false
-
-(* An aggregation packet is the indicator byte then a sequence of units, each
-   preceded by its sixteen-bit length (RFC 6184 §5.7.1). *)
-let rec aggregated payload offset acc =
-  let length = String.length payload in
-  if offset >= length then List.rev acc
-  else if offset + 2 > length then List.rev acc
-  else
-    let size = String.get_uint16_be payload offset in
-    if size = 0 || offset + 2 + size > length then List.rev acc
-    else
-      aggregated payload (offset + 2 + size)
-        (String.sub payload (offset + 2) size :: acc)
 
 let push t payload =
   if String.length payload < 1 then []

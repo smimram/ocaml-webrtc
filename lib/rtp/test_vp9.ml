@@ -62,6 +62,13 @@ let run () =
   check "so does something that is not VP9 at all"
     (Rtp.Vp9.dimensions (hex "00000000") = None);
 
+  check "a keyframe's first packet is a place to join"
+    (Rtp.Frame.starts_keyframe Rtp.Frame.Vp9 (hex "08" ^ keyframe));
+  check "its later packets are not"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.Vp9 (hex "00" ^ keyframe)));
+  check "nor is an interframe"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.Vp9 (hex "08" ^ interframe)));
+
   suite "vp9 frames";
   let t = Rtp.Frame.create Rtp.Frame.Vp9 in
   let push ~sequence ~timestamp ~marker payload =

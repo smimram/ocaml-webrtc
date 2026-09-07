@@ -3,11 +3,10 @@
 Parsing the offer a browser sends and generating the answer to it
 (RFC 4566, RFC 8866, with the WebRTC attributes of RFC 8829).
 
-Deliberately partial. There is one shape of session this server ever sees — a
-microphone and a camera a browser wants to send — so the parser looks for the
-attributes it needs and ignores the rest, rather than modelling SDP. It does
-not round-trip: what comes back out is an answer built from scratch, not the
-offer amended.
+Deliberately partial. There are few shapes of session a browser ever produces
+here, so the parser looks for the attributes it needs and ignores the rest,
+rather than modelling SDP. It does not round-trip: what comes back out is an
+answer built from scratch, not the offer amended.
 
 ## The offer
 
@@ -21,6 +20,13 @@ Session-level attributes are folded into each media description, media level
 winning, so a browser that puts `a=ice-ufrag` in either place is read the same
 way. An offer proposing nothing we can receive is rejected with `Invalid`
 rather than half-understood.
+
+Each section also keeps **every** format it offered, not only the one chosen,
+and the sources of its `a=ssrc` lines. Both are there for a forwarder: the
+first is what it searches when it has to answer with a codec someone else
+settled on, through `matching`, and the second is the only thing that tells
+two tracks of one kind apart, since under BUNDLE they share a transport and,
+with one codec per kind, a payload type as well.
 
 ## Choosing a codec
 
@@ -53,6 +59,14 @@ a=rtcp-mux            RTCP shares the media port
 a=candidate:…         one per address, most preferred first
 ```
 
+A section is `a=recvonly` unless `sending` says what we send on it, in which
+case it is `a=sendonly` and carries the source its packets will bear and the
+`a=msid` stream and track they belong to — signalled so that a peer can bind
+the packets to a track before they arrive, and so that two tracks it should
+play in step can be given one stream. `media` replaces the sections the offer
+was parsed into, which is how an answer names a codec other than the one this
+library would have chosen for itself.
+
 **The answer has one section per section of the offer, in the same order.**
 That correspondence is how the two sides agree on what each section is about
 (RFC 3264 §6), so a section we cannot use is not left out but echoed back with
@@ -69,12 +83,18 @@ preference counting down from the address we would rather be reached on
 
 The `a=fmtp` line is echoed back unchanged. Those are the parameters the
 browser chose for its own encoder, and we are in no position to argue with
-them. The `a=rtcp-fb` lines are not echoed at all: we send no RTCP, so asking
-for feedback we will never provide would only be a lie.
+them. Of the `a=rtcp-fb` lines only `nack pli` is answered, and only where the
+offer proposed it: an answer may use no feedback the offer did not list, and
+asking for what we will never act on would only be a lie.
 
 ## Testing
 
-There are no unit tests here; the browser is the test. It rejects an answer
+`test.ml` parses an offer of the shape Chrome writes — three sections on one
+bundled transport, the two video ones identical but for their sources — and
+reads the answers made to it back through the same parser, which is the
+cheapest way to check that what is written says what it means.
+
+Beyond that the browser is the test, and a harsh one. It rejects an answer
 that is wrong in the smallest way — a missing `a=mid`, a `BUNDLE` group naming
 a section that is not there — and it does so silently, leaving ICE to time out
 with no clue as to why. That is the reason the answer is built in one place,
@@ -83,5 +103,6 @@ in one function, and kept boring.
 To see one: post an offer and read what comes back.
 
 ```sh
-curl -s -X POST -H 'Content-Type: application/sdp'   --data-binary @offer.sdp http://localhost:8080/webrtc/offer
+curl -s -X POST -H 'Content-Type: application/sdp' \
+  --data-binary @offer.sdp http://localhost:8080/webrtc/offer
 ```

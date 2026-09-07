@@ -1,10 +1,14 @@
-(** The RTCP this receiver builds, and the little of it that it reads.
+(** The RTCP this stack builds, and the little of it that it reads.
 
-    A recorder has two things to say back. A picture loss indication, because
+    A receiver has two things to say back. A picture loss indication, because
     after a lost packet every picture predicted from the one it ruined is
     unusable and a browser sends a fresh keyframe only when asked. And a
     receiver report, because a sender that hears nothing about what arrived has
-    nothing to size its bitrate against. *)
+    nothing to size its bitrate against.
+
+    A sender has one: a sender report, which is what ties its stream's clock to
+    the wall clock, and so the only thing that lets a peer play two streams of
+    ours — a camera and the microphone that goes with it — in step. *)
 
 type t = string
 
@@ -13,6 +17,31 @@ val pli : sender:int32 -> media:int32 -> t
     packet naming the source whose stream is unreadable. [sender] is our own
     synchronisation source, which a browser does not otherwise know and does
     not check; [media] is the source of the pictures being asked for. *)
+
+val ntp_of_time : float -> int64
+(** A Unix time as the fixed-point NTP timestamp a sender report carries (RFC
+    3550 §4): seconds since 1900 above the point, and the fraction below. *)
+
+val compact_ntp : int64 -> int32
+(** The middle 32 bits of such a timestamp, which is the form a report echoes
+    back and {!report}'s [last_sr] holds. *)
+
+val sender_report :
+  sender:int32 ->
+  ntp:int64 ->
+  timestamp:int32 ->
+  packets:int32 ->
+  octets:int32 ->
+  t
+(** A sender report (RFC 3550 §6.4.1): what our stream's clock reads at a
+    moment of the wall clock, and how much has been sent since it began. The
+    pairing of the two timestamps is the point of it — a peer receiving two of
+    our streams has nothing else to align them by. No reception blocks are
+    included: a forwarder reports on what it receives to the peer it receives
+    it from, not to the peers it sends it to.
+
+    [packets] and [octets] count what has been sent under [sender] since it
+    started, the octets excluding every header. *)
 
 (** One source's reception statistics (RFC 3550 §6.4.1). [cumulative_lost] is
     signed and occupies three octets; [fraction_lost] is the loss since the
@@ -44,7 +73,23 @@ val compound : t list -> t
 (** Packets sent as one datagram, which is how RTCP travels unless reduced-size
     RTCP was negotiated, which we do not negotiate (RFC 3550 §6.1). *)
 
-val sender_reports : string -> (int32 * int32) list
-(** The source and NTP timestamp of every sender report in a compound packet,
-    which is all we read of what a browser sends us: it is what a receiver
-    report has to echo back. Anything else in the packet is stepped over. *)
+(** What a sender report says about its source. *)
+type sender_info = {
+  sender : int32;
+  ntp : int64;  (** the wall clock, when the report was sent *)
+  rtp_timestamp : int32;  (** the stream's own clock, at that same moment *)
+  packets : int32;
+  octets : int32;
+}
+
+val sender_reports : string -> sender_info list
+(** Every sender report in a compound packet. A receiver echoes the timestamp
+    back so that the sender can measure a round trip; a forwarder also keeps
+    the pairing of the two clocks, which is what it has to reproduce in reports
+    of its own for the streams to stay in step downstream. Anything else in the
+    packet is stepped over. *)
+
+val keyframe_requests : string -> int32 list
+(** The media sources named by the picture loss indications in a compound
+    packet: what a peer we are sending to asks us for when it cannot decode,
+    and which a forwarder passes on to the peer it is forwarding from. *)

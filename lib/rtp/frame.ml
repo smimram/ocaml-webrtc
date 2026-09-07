@@ -34,6 +34,31 @@ let create codec =
     dropped = 0;
   }
 
+(* Where a receiver may join --------------------------------------------- *)
+
+(* A picture that can be decoded on its own, and the beginning of it: a
+   forwarder that starts anywhere else sends its peer packets it can only
+   throw away, or worse, decode into a picture built on frames it never had.
+
+   VP8 and VP9 carry the frame type in the frame's own first bytes, so the
+   packet that starts the frame is both the test and the place to start. H.264
+   keeps the parameter sets out of the picture, and a decoder that joins at the
+   IDR without them has nothing to configure itself from; a browser sends them
+   immediately before, so the sequence parameter set is the point to join. *)
+let starts_keyframe codec payload =
+  match codec with
+  | Vp8 ->
+      Vp8.starts_frame payload
+      && (match Vp8.partition payload with
+         | data -> Vp8.keyframe data
+         | exception Vp8.Invalid _ -> false)
+  | Vp9 ->
+      Vp9.starts_frame payload
+      && (match Vp9.payload payload with
+         | data -> Vp9.keyframe data
+         | exception Vp9.Invalid _ -> false)
+  | H264 -> List.mem 7 (H264.payload_nal_types payload)
+
 let dimensions t = t.dimensions
 let dropped t = t.dropped
 

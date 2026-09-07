@@ -1,0 +1,7 @@
+; The example is built but not installed: it serves files from a directory
+; beside it, which an installed binary would not have.
+(executable
+ (name conference)
+ (libraries dream webrtc.dtls webrtc.ice webrtc.rtp webrtc.sdp webrtc.srtp
+   lwt.unix mirage-crypto-rng mirage-crypto-rng.unix)
+ (preprocess (pps lwt_ppx)))

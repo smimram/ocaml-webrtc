@@ -2,11 +2,10 @@
     [AES_CM_128_HMAC_SHA1_80]: AES-128 in counter mode for confidentiality and
     an 80-bit HMAC-SHA1 tag for authentication.
 
-    Media only ever travels one way, so of RTP this implements the receiving
-    half alone; of RTCP it also protects, for the keyframe requests that are
-    the one thing a recorder has to say back. Each synchronisation source is
-    tracked separately, as each has its own rollover counter and replay
-    window. *)
+    Both halves are here: a recorder only ever receives, but a forwarder
+    sends on what it received, and either way the feedback it has to say back
+    travels protected too. Each synchronisation source is tracked separately,
+    as each has its own rollover counter and replay window. *)
 
 type t
 
@@ -47,6 +46,18 @@ val sender : master_key:string -> master_salt:string -> sender
     exported: the half we send under, which is the server's.
 
     @raise Invalid_argument if the key or the salt is the wrong length. *)
+
+val protect : sender -> string -> string
+(** Encrypt and authenticate an RTP packet, yielding the SRTP packet that goes
+    on the wire.
+
+    The rollover counter travels only in the two ends' own state, and this one
+    infers it from the sequence numbers already sent under the same source,
+    exactly as {!unprotect} infers it from those already received — so packets
+    may be given out of order, as a forwarder is bound to do when the network
+    reordered what it was forwarding.
+
+    @raise Invalid_argument if the packet is not RTP. *)
 
 val protect_rtcp : sender -> string -> string
 (** Encrypt and authenticate an RTCP packet, yielding the SRTCP packet that

@@ -97,6 +97,22 @@ let run () =
   check "an aggregation packet always starts one"
     (Rtp.H264.starts_unit stap_a);
 
+  check "a single unit is the type it carries"
+    (Rtp.H264.payload_nal_types baseline_pps = [ 8 ]);
+  check "an aggregation packet is all of them"
+    (Rtp.H264.payload_nal_types stap_a = [ 7; 8 ]);
+  check "a fragment says what it starts"
+    (Rtp.H264.payload_nal_types (fragment 0x87 body) = [ 7 ]);
+  check "and one joined in the middle says nothing"
+    (Rtp.H264.payload_nal_types (fragment 0x07 body) = []);
+
+  (* A decoder joining at an IDR without the parameter sets has nothing to
+     configure itself from, so the place to join is where they are. *)
+  check "the parameter sets are where a newcomer joins"
+    (Rtp.Frame.starts_keyframe Rtp.Frame.H264 stap_a);
+  check "and a picture on its own is not"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.H264 (hex "65AABBCC")));
+
   suite "h264 frames";
 
   let t = Rtp.Frame.create Rtp.Frame.H264 in

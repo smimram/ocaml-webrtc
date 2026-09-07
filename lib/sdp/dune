@@ -1,3 +1,9 @@
 (library
  (name sdp)
- (public_name webrtc.sdp))
+ (public_name webrtc.sdp)
+ (modules :standard \ test))
+
+(test
+ (name test)
+ (modules test)
+ (libraries sdp testlib))

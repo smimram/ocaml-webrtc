@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>conference</title>
+    <link rel="stylesheet" href="/static/conference.css" />
+  </head>
+  <body>
+    <h1>watching <span class="name" id="conference"></span></h1>
+    <p class="about">
+      Nothing of yours is sent: this page only receives. The speaker is at
+      <code id="address"></code>.
+    </p>
+    <div class="controls">
+      <button class="primary" id="join">Join</button>
+      <span id="status">idle</span>
+    </div>
+    <div class="videos">
+      <figure class="wide idle" id="screen-figure">
+        <video id="screen" autoplay playsinline></video>
+        <figcaption>desktop</figcaption>
+      </figure>
+      <figure class="idle" id="camera-figure">
+        <video id="camera" autoplay playsinline></video>
+        <figcaption>camera</figcaption>
+      </figure>
+    </div>
+    <!-- The audio arrives on a stream of its own and is played by an element
+         of its own, so that it keeps going when no picture is being sent. -->
+    <audio id="audio" autoplay></audio>
+    <footer><span id="watchers"></span></footer>
+    <script src="/static/attendee.js"></script>
+  </body>
+</html>

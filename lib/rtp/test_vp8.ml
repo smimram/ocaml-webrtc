@@ -54,6 +54,17 @@ let run () =
     (Rtp.Vp8.dimensions keyframe = Some (640, 480));
   check "an interframe declares none" (Rtp.Vp8.dimensions interframe = None);
 
+  (* Where a forwarder may let a newcomer in: the first packet of a keyframe,
+     and nothing else. *)
+  check "a keyframe's first packet is a place to join"
+    (Rtp.Frame.starts_keyframe Rtp.Frame.Vp8 (hex "10" ^ keyframe));
+  check "its later packets are not"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.Vp8 (hex "00" ^ keyframe)));
+  check "nor is an interframe"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.Vp8 (hex "10" ^ interframe)));
+  check "nor is a payload cut short inside its descriptor"
+    (not (Rtp.Frame.starts_keyframe Rtp.Frame.Vp8 (hex "90")));
+
   suite "vp8 frames";
   let t = Rtp.Frame.create Rtp.Frame.Vp8 in
   let push ~sequence ~timestamp ~marker payload =

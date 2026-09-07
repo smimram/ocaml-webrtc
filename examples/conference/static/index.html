@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>conference</title>
+    <link rel="stylesheet" href="/static/conference.css" />
+  </head>
+  <body>
+    <h1>conference</h1>
+    <p class="about">
+      A conference is a name, and a name is an address. Anyone at
+      <code>/name</code> watches it; whoever is at <code>/name/speaker</code>
+      first is the one talking.
+    </p>
+    <form class="controls" id="enter">
+      <input
+        type="text"
+        id="name"
+        placeholder="conference name"
+        autocomplete="off"
+        autofocus
+      />
+      <button class="primary" type="submit">Watch</button>
+      <button type="button" id="speak">Speak</button>
+    </form>
+    <footer>
+      Served by <code>examples/conference</code>, a selective forwarding unit
+      built on the <code>webrtc</code> libraries.
+    </footer>
+    <script>
+      const field = document.getElementById("name");
+      const name = () => encodeURIComponent(field.value.trim());
+      document.getElementById("enter").onsubmit = (event) => {
+        event.preventDefault();
+        if (name()) location.href = "/" + name();
+      };
+      document.getElementById("speak").onclick = () => {
+        if (name()) location.href = "/" + name() + "/speaker";
+      };
+    </script>
+  </body>
+</html>
