@@ -27,11 +27,11 @@ demultiplexed by their first byte (RFC 7983) and the two streams are told apart
 by payload type.
 
 - The browser's connectivity checks are answered from the socket they arrived
-  on, which is what opens the mapping when the browser is behind a NAT. Every
-  address of this machine is advertised as a candidate, the loopback last, so
-  that a browser here and a browser on the network each find one they can pair
-  with. `--ip` overrides the list, which is what a server behind a port
-  forwarding needs.
+  on, which is what opens the mapping when the browser is behind a NAT. The
+  candidates advertised to a browser start with the address its own offer
+  reached us on, so that a browser here and a browser on any of this machine's
+  networks each find one they can pair with, and end with the loopback. `--ip`
+  overrides the list, which is what a server behind a port forwarding needs.
 - DTLS exists only to agree on SRTP keys — there is no application data, so
   the handshake is cut to one cipher suite, `ECDHE-ECDSA-AES128-GCM-SHA256`,
   against a self-signed P-256 certificate made at start-up.

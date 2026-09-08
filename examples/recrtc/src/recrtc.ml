@@ -18,12 +18,14 @@ let media_port = ref 7000
    told its public address with --ip. *)
 let advertised_ips = ref []
 
-(* The media socket is bound to the advertised address rather than to every
-   interface, so that our answers to connectivity checks always leave from the
-   address they were sent to. A peer discards a response coming from anywhere
-   else (RFC 8445 §7.2.5.2.1), and a wildcard socket would let the routing table
-   choose. Behind a one-to-one NAT the two differ, and the local address must
-   then be given explicitly. *)
+(* The media socket is bound to the advertised address when a single one was
+   given, so that our answers to connectivity checks always leave from the
+   address they were sent to: a peer discards a response coming from anywhere
+   else (RFC 8445 §7.2.5.2.1). By default there is no single one, and the
+   wildcard leaves the choice to the routing table, which agrees with the
+   destination in every case a peer can actually reach us on. Behind a
+   one-to-one NAT the advertised and local addresses differ, and the local one
+   must then be given explicitly. *)
 let bind_ip = ref None
 let debug = ref false
 
@@ -31,25 +33,72 @@ let debug = ref false
    successive sessions never overwrite one another. *)
 let output_prefix = ref "recording"
 
-(* Which address the kernel would use to reach the outside world. Connecting a
-   datagram socket sends nothing: it only consults the routing table. The
-   address is from the range reserved for documentation, so nothing can come of
-   it even if a packet were sent. *)
-let primary_address () =
+(* Which of our own addresses the kernel would reach [destination] from.
+   Connecting a datagram socket sends nothing: it only consults the routing
+   table, which is the one thing that knows which of our interfaces a given
+   peer is on. *)
+let address_toward destination =
   let socket = Unix.socket PF_INET SOCK_DGRAM 0 in
   Fun.protect
     ~finally:(fun () -> Unix.close socket)
     (fun () ->
       match
-        Unix.connect socket (Unix.ADDR_INET (Unix.inet_addr_of_string "203.0.113.1", 9));
+        Unix.connect socket (Unix.ADDR_INET (destination, 9));
         Unix.getsockname socket
       with
       | Unix.ADDR_INET (ip, _) -> [ Unix.string_of_inet_addr ip ]
       | _ | (exception Unix.Unix_error _) -> [])
 
-(* The loopback comes last: a peer elsewhere on the network cannot use it, and
-   one on this machine can use either. *)
-let default_addresses () = primary_address () @ [ "127.0.0.1" ]
+(* The address the outside world would reach us on. The one asked about is from
+   the range reserved for documentation, so nothing can come of it even if a
+   packet were sent. *)
+let primary_address () = address_toward (Unix.inet_addr_of_string "203.0.113.1")
+
+(* What is advertised to a peer that signalled from [toward], most preferred
+   first. A machine with more than one interface has no single answer here: a
+   browser pairs its own candidates only with ones it can route to, so a peer
+   on the wireless network is stranded by a candidate on the wired one, in a
+   way that looks like silence — ICE latches on our side while the browser sits
+   in "checking" and then "failed", which is what it calls having no STUN
+   server. The address that peer's own signalling arrived on is therefore the
+   first one offered.
+
+   The default route's address follows, for a peer whose media may not take the
+   path its signalling did, and loopback after that, where it is of use to
+   something on this machine that is not a browser: a browser here gathers no
+   loopback candidate of its own once a real interface exists, and so has to be
+   given a real one of ours to pair with. *)
+let default_addresses ?toward () =
+  let addresses =
+    (match toward with
+    | Some peer ->
+        (* Loopback keeps its place at the end wherever it comes from. A peer
+           that signalled over it is on this machine and can reach every
+           address we have, so offering it first only adds a pair for the two
+           sides to change their minds between — and a peer that latches
+           somewhere else after the media has started loses what was sent to
+           where it was before. *)
+        List.filter (( <> ) "127.0.0.1") (address_toward peer)
+    | None -> [])
+    @ primary_address () @ [ "127.0.0.1" ]
+  in
+  List.fold_left
+    (fun kept address ->
+      if List.mem address kept then kept else kept @ [ address ])
+    [] addresses
+
+(* Where a request came from, which is the best guess at where this peer's
+   media will come from too. Dream gives the address and the port together, and
+   an address of its own — a Unix socket, an IPv6 client — is simply one we
+   cannot answer with a route lookup. *)
+let peer_address request =
+  match String.rindex_opt (Dream.client request) ':' with
+  | None -> None
+  | Some colon -> (
+      let address = String.sub (Dream.client request) 0 colon in
+      match Unix.inet_addr_of_string address with
+      | address -> Some address
+      | exception Failure _ -> None)
 
 (* What we chose to receive on each kind of media, and the state that turns
    its packets back into something a file can hold. *)
@@ -418,8 +467,13 @@ let handle_offer request =
         }
       in
       Hashtbl.replace sessions (Ice.Agent.local ice).ufrag session;
+      let addresses =
+        match !advertised_ips with
+        | [] -> default_addresses ?toward:(peer_address request) ()
+        | given -> given
+      in
       let answer =
-        Sdp.answer ~offer ~addresses:!advertised_ips ~port:!media_port
+        Sdp.answer ~offer ~addresses ~port:!media_port
           ~ice_ufrag:(Ice.Agent.local ice).ufrag ~ice_pwd:(Ice.Agent.local ice).pwd
           ~fingerprint:("sha-256", (Lazy.force certificate).fingerprint)
           ()
@@ -827,8 +881,10 @@ let rec reap_sessions () =
     (Hashtbl.copy sessions);
   reap_sessions ()
 
-(* With one advertised address we can bind to it; with several, only the
-   wildcard covers them all. *)
+(* With one advertised address we can bind to it; with several — and with the
+   default, which answers each peer with the address its own signalling arrived
+   on — only the wildcard covers them all, and the routing table then picks a
+   source that agrees with the destination of every check we answer. *)
 let bind_address () =
   match (!bind_ip, !advertised_ips) with
   | Some address, _ -> address
@@ -868,11 +924,11 @@ let () =
         Arg.String (fun address -> advertised_ips := !advertised_ips @ [ address ]),
         "ADDRESS  an address to advertise as an ICE candidate, which must be \
          reachable by the browser; may be repeated, most preferred first \
-         (default: this machine's own addresses)" );
+         (default: the address this peer reached us on, and the machine's \
+         own)" );
     ]
     (fun argument -> raise (Arg.Bad ("unexpected argument: " ^ argument)))
     "recrtc [options]";
-  if !advertised_ips = [] then advertised_ips := default_addresses ();
   Dream.initialize_log ~level:(if !debug then `Debug else `Info) ();
   (* The sub-log keeps the threshold it was created with, so it needs telling
      separately. *)
@@ -885,7 +941,13 @@ let () =
       log.info (fun log ->
           log "media socket listening on %s:%d, advertising %s" (bind_address ())
             !media_port
-            (String.concat ", " !advertised_ips));
+            (match !advertised_ips with
+            | [] ->
+                (* Each peer is told the address its own signalling arrived
+                   on, so this is only what a peer off the default route
+                   would hear. *)
+                String.concat ", " (default_addresses ()) ^ " (per peer)"
+            | given -> String.concat ", " given));
       Lwt.async (fun () -> report_loop socket);
       media_loop socket);
   Lwt.async reap_sessions;

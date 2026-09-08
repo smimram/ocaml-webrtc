@@ -174,11 +174,21 @@ interface exists — so advertising `127.0.0.1` alone strands a browser on this
 very machine, in a way that looks like silence: ICE latches on our side while
 the browser sits in `checking` and then `failed`.
 
-So the default advertises every address of the machine, loopback last, and
-binds the wildcard; the routing table then picks a source that agrees with the
-destination for every pair a peer can actually reach us on. Passing a single
-`--ip` goes back to binding that address exactly. `--bind` sets the local
-address independently, for a server behind a 1:1 NAT.
+So the default is per peer: the answer to an offer carries the address that
+peer's own signalling arrived on — a route lookup against the client address
+Dream reports, which is the one thing that knows which of several interfaces a
+peer is on — then the address of the default route, then loopback. A machine
+with a wired and a wireless interface has no single right answer, and offering
+only the default route's address strands anyone on the other one exactly as
+above. The media socket binds the wildcard, and the routing table then picks a
+source that agrees with the destination for every pair a peer can actually
+reach us on. Passing a single `--ip` overrides the list and goes back to
+binding that address exactly. `--bind` sets the local address independently,
+for a server behind a 1:1 NAT.
+
+Loopback stays last even for a peer that signalled over it: that peer is on
+this machine and can reach every address we have, so putting loopback first
+only adds a pair for the two sides to change their minds between.
 
 **Evaluation order in flight construction.** `handshake_records` takes the next
 handshake sequence number and appends to the transcript as a side effect.
