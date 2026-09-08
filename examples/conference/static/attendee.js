@@ -29,18 +29,32 @@ function show(what, on) {
   elements[what].parentElement.classList.toggle("idle", !on);
 }
 
+// Telling the server now, rather than leaving it to notice that the checks
+// have stopped coming.
+function stopSession(id) {
+  fetch("/" + encodeURIComponent(name) + "/stop", {
+    method: "POST",
+    headers: { [SESSION_HEADER]: id },
+  }).catch(() => {});
+}
+
 async function join() {
-  connection = new RTCPeerConnection({ iceServers: [] });
+  // Everything below works on this connection rather than on the variable:
+  // leaving happens on an event, which can land in any of the awaits here, and
+  // what it leaves behind — a null, or the connection of a later join — must
+  // not be mistaken for the one this offer was made on.
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  connection = pc;
   const wanted = new Map();
   for (const [what, kind] of [
     ["audio", "audio"],
     ["camera", "video"],
     ["screen", "video"],
   ]) {
-    wanted.set(connection.addTransceiver(kind, { direction: "recvonly" }), what);
+    wanted.set(pc.addTransceiver(kind, { direction: "recvonly" }), what);
   }
 
-  connection.ontrack = (event) => {
+  pc.ontrack = (event) => {
     const what = wanted.get(event.transceiver);
     if (!what) return;
     // A stream of our own per element: the server groups the microphone with
@@ -54,21 +68,27 @@ async function join() {
     event.track.onunmute = () => show(what, true);
     event.track.onmute = () => show(what, false);
   };
-  connection.onconnectionstatechange = () => {
-    if (!connection) return;
-    status.textContent = connection.connectionState;
-    if (connection.connectionState === "failed") leave();
+  pc.onconnectionstatechange = () => {
+    // A connection that has been left still has its last states to report.
+    if (connection !== pc) return;
+    status.textContent = pc.connectionState;
+    if (pc.connectionState === "failed") leave();
   };
 
-  await connection.setLocalDescription(await connection.createOffer());
+  await pc.setLocalDescription(await pc.createOffer());
   const response = await fetch("/" + encodeURIComponent(name) + "/offer", {
     method: "POST",
     headers: { "Content-Type": "application/sdp" },
-    body: connection.localDescription.sdp,
+    body: pc.localDescription.sdp,
   });
   if (!response.ok) throw new Error(await response.text());
-  session = response.headers.get(SESSION_HEADER);
-  await connection.setRemoteDescription({
+  const ufrag = response.headers.get(SESSION_HEADER);
+  // Left while the exchange was in flight, so the session the server has just
+  // opened is one nobody is on the other end of: leave() could not have said
+  // so, not knowing yet what it was called.
+  if (connection !== pc) return stopSession(ufrag);
+  session = ufrag;
+  await pc.setRemoteDescription({
     type: "answer",
     sdp: await response.text(),
   });
@@ -76,10 +96,7 @@ async function join() {
 
 function leave() {
   if (session) {
-    fetch("/" + encodeURIComponent(name) + "/stop", {
-      method: "POST",
-      headers: { [SESSION_HEADER]: session },
-    });
+    stopSession(session);
     session = null;
   }
   if (connection) {
@@ -100,7 +117,8 @@ joinButton.onclick = async () => {
     if (connection) leave();
     else {
       await join();
-      joinButton.textContent = "Leave";
+      // Unless it was left again while the offer was in flight.
+      if (connection) joinButton.textContent = "Leave";
     }
   } catch (error) {
     leave();

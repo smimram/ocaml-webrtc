@@ -37,20 +37,33 @@ function show(element, on) {
 // follow it: the session header says which session is being renegotiated, and
 // its absence asks for a new one.
 async function negotiate() {
-  if (negotiating) return;
+  // Nothing to renegotiate once stopped, which is a request a browser can
+  // still have in hand when it happens.
+  if (negotiating || !connection) return;
   negotiating = true;
+  // The exchange works on this connection rather than on the variable:
+  // stopping happens on an event, which can land in any of the awaits below,
+  // and what it leaves behind — a null, or the connection of a later
+  // connect — must not be mistaken for the one this offer was made on.
+  const pc = connection;
   try {
-    await connection.setLocalDescription(await connection.createOffer());
+    await pc.setLocalDescription(await pc.createOffer());
     const headers = { "Content-Type": "application/sdp" };
     if (session) headers[SESSION_HEADER] = session;
     const response = await fetch("/" + encodeURIComponent(name) + "/speaker/offer", {
       method: "POST",
       headers,
-      body: connection.localDescription.sdp,
+      body: pc.localDescription.sdp,
     });
     if (!response.ok) throw new Error(await response.text());
-    session = response.headers.get(SESSION_HEADER);
-    await connection.setRemoteDescription({
+    const ufrag = response.headers.get(SESSION_HEADER);
+    // Stopped while the exchange was in flight: for a first offer the session
+    // the server has just opened is one nobody is on the other end of, and
+    // stop() could not have said so, not knowing yet what it was called — and
+    // it must be said, or the conference stays held by a speaker that is gone.
+    if (connection !== pc) return stopSession(ufrag);
+    session = ufrag;
+    await pc.setRemoteDescription({
       type: "answer",
       sdp: await response.text(),
     });
@@ -80,10 +93,12 @@ async function connect() {
   prefer(camera);
   prefer(screen);
 
-  connection.onconnectionstatechange = () => {
-    if (!connection) return;
-    status.textContent = connection.connectionState;
-    if (connection.connectionState === "failed") stop();
+  const pc = connection;
+  pc.onconnectionstatechange = () => {
+    // A connection that has been stopped still has its last states to report.
+    if (connection !== pc) return;
+    status.textContent = pc.connectionState;
+    if (pc.connectionState === "failed") stop();
   };
   // Not expected — replacing a track needs no renegotiation — but a browser
   // is entitled to ask, and answering is one request.
@@ -92,7 +107,8 @@ async function connect() {
   };
 
   await negotiate();
-  shareButton.disabled = false;
+  // Unless it was stopped again while the offer was in flight.
+  if (connection === pc) shareButton.disabled = false;
 }
 
 async function share() {
@@ -122,14 +138,18 @@ async function unshare() {
   shareButton.textContent = "Share desktop";
 }
 
+// Telling the server now, rather than leaving it to notice that the checks
+// have stopped coming.
+function stopSession(id) {
+  fetch("/" + encodeURIComponent(name) + "/stop", {
+    method: "POST",
+    headers: { [SESSION_HEADER]: id },
+  }).catch(() => {});
+}
+
 function stop() {
-  // Tell the server now, rather than leaving it to notice that the checks
-  // have stopped coming.
   if (session) {
-    fetch("/" + encodeURIComponent(name) + "/stop", {
-      method: "POST",
-      headers: { [SESSION_HEADER]: session },
-    });
+    stopSession(session);
     session = null;
   }
   unshare();
@@ -172,7 +192,7 @@ connectButton.onclick = async () => {
     if (connection) stop();
     else {
       await connect();
-      connectButton.textContent = "Disconnect";
+      if (connection) connectButton.textContent = "Disconnect";
     }
   } catch (error) {
     stop();
