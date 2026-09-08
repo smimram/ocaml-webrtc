@@ -58,7 +58,7 @@ by payload type.
 
 | | |
 |---|---|
-| `--port`, `--interface` | where the HTTP server listens (default `localhost:8080`) |
+| `--port`, `--interface` | where the HTTP server listens (default port 8080, every interface) |
 | `--media-port` | the UDP port media arrives on (default 7000) |
 | `--ip` | an address to advertise as an ICE candidate, repeatable |
 | `--bind` | the local address of the media socket, when it differs (behind a NAT) |

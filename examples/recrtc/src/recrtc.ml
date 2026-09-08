@@ -9,7 +9,11 @@
    the repository, which is what "make serve" does. *)
 let static_root = ref "examples/recrtc/static"
 let http_port = ref 8080
-let http_interface = ref "localhost"
+(* Every interface, so that a browser on another machine can reach the pages
+   as well as one here. Recording from elsewhere needs HTTPS in front of this
+   all the same: getUserMedia asks for a secure context, which a LAN address
+   is not. *)
+let http_interface = ref "0.0.0.0"
 let media_port = ref 7000
 
 (* The addresses we advertise as host candidates, most preferred first. By
@@ -906,7 +910,8 @@ let () =
       ("--port", Arg.Set_int http_port, "PORT  HTTP port (default 8080)");
       ( "--interface",
         Arg.Set_string http_interface,
-        "ADDRESS  interface the HTTP server binds to (default localhost, use          0.0.0.0 to accept connections from other machines)" );
+        "ADDRESS  interface the HTTP server binds to (default 0.0.0.0, every \
+         one; localhost to accept connections from this machine alone)" );
       ("--media-port", Arg.Set_int media_port, "PORT  UDP port for media (default 7000)");
       ("--debug", Arg.Set debug, "  log every datagram that is dropped");
       ( "--static",
