@@ -10,10 +10,10 @@ build:
 test:
 	@dune test
 
-serve: build
+recrtc:
 	@dune exec examples/recrtc/src/recrtc.exe -- $(if $(IP),--ip $(IP)) $(ARGS)
 
-conference: build
+conference:
 	@dune exec examples/conference/src/conference.exe -- $(if $(IP),--ip $(IP)) $(ARGS)
 
 clean:
